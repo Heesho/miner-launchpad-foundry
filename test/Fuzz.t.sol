@@ -104,14 +104,7 @@ contract FuzzTest is BaseTest {
         MockToken lpToken = new MockToken("LP", "LP");
         address receiver = makeAddr("receiver");
 
-        Auction auction = new Auction(
-            initPrice,
-            address(lpToken),
-            receiver,
-            epochPeriod,
-            1.5e18,
-            1e6
-        );
+        Auction auction = new Auction(initPrice, address(lpToken), receiver, epochPeriod, 1.5e18, 1e6);
 
         vm.warp(block.timestamp + timePassed);
 
@@ -169,14 +162,7 @@ contract FuzzTest is BaseTest {
         MockToken asset = new MockToken("Asset", "ASSET");
         address receiver = makeAddr("receiver");
 
-        Auction auction = new Auction(
-            paymentAmount,
-            address(lpToken),
-            receiver,
-            1 hours,
-            priceMultiplier,
-            1e6
-        );
+        Auction auction = new Auction(paymentAmount, address(lpToken), receiver, 1 hours, priceMultiplier, 1e6);
 
         asset.mint(address(auction), 100 ether);
         lpToken.mint(alice, type(uint256).max);
@@ -305,16 +291,8 @@ contract FuzzTest is BaseTest {
                 previousMinerBalanceBefore + previousMinerFee + teamFee,
                 "Previous miner + team fee mismatch"
             );
-            assertEq(
-                weth.balanceOf(auctionAddr),
-                treasuryBalanceBefore + treasuryFee,
-                "Treasury fee mismatch"
-            );
-            assertEq(
-                weth.balanceOf(protocolFeeAddress),
-                protocolBalanceBefore + protocolFee,
-                "Protocol fee mismatch"
-            );
+            assertEq(weth.balanceOf(auctionAddr), treasuryBalanceBefore + treasuryFee, "Treasury fee mismatch");
+            assertEq(weth.balanceOf(protocolFeeAddress), protocolBalanceBefore + protocolFee, "Protocol fee mismatch");
         }
     }
 
@@ -344,21 +322,14 @@ contract FuzzTest is BaseTest {
         multicall.mine{value: price2}(rigAddr, 1, block.timestamp + 1 days, price2, "");
 
         uint256 expectedMinted = holdTime * epochUps;
-        assertEq(
-            unitToken.balanceOf(bob),
-            bobBalanceBefore + expectedMinted,
-            "Minted amount mismatch"
-        );
+        assertEq(unitToken.balanceOf(bob), bobBalanceBefore + expectedMinted, "Minted amount mismatch");
     }
 
     /*//////////////////////////////////////////////////////////////
                             CORE FUZZ TESTS
     //////////////////////////////////////////////////////////////*/
 
-    function testFuzz_core_launchWithVariousAmounts(
-        uint256 donutAmount,
-        uint256 unitAmount
-    ) public {
+    function testFuzz_core_launchWithVariousAmounts(uint256 donutAmount, uint256 unitAmount) public {
         donutAmount = bound(donutAmount, MIN_DONUT_FOR_LAUNCH, 1_000_000 ether);
         unitAmount = bound(unitAmount, 1, 1_000_000 ether);
 
@@ -397,10 +368,7 @@ contract FuzzTest is BaseTest {
         assertTrue(IERC20(lp).balanceOf(core.DEAD_ADDRESS()) > 0);
     }
 
-    function testFuzz_core_launchWithVariousUps(
-        uint256 initialUps,
-        uint256 tailUps
-    ) public {
+    function testFuzz_core_launchWithVariousUps(uint256 initialUps, uint256 tailUps) public {
         initialUps = bound(initialUps, 1, 1e24);
         tailUps = bound(tailUps, 1, initialUps);
 
@@ -589,11 +557,9 @@ contract FuzzTest is BaseTest {
                         INVARIANT-STYLE FUZZ TESTS
     //////////////////////////////////////////////////////////////*/
 
-    function testFuzz_invariant_totalSupplyMatchesBalances(
-        uint256 mintAmount1,
-        uint256 mintAmount2,
-        uint256 burnAmount
-    ) public {
+    function testFuzz_invariant_totalSupplyMatchesBalances(uint256 mintAmount1, uint256 mintAmount2, uint256 burnAmount)
+        public
+    {
         mintAmount1 = bound(mintAmount1, 0, type(uint104).max);
         mintAmount2 = bound(mintAmount2, 0, type(uint104).max);
         burnAmount = bound(burnAmount, 0, mintAmount1);
@@ -672,14 +638,7 @@ contract FuzzTest is BaseTest {
         MockToken asset = new MockToken("Asset", "A");
         address receiver = makeAddr("receiver");
 
-        Auction auction = new Auction(
-            1e15,
-            address(lpToken),
-            receiver,
-            1 hours,
-            1.5e18,
-            1e6
-        );
+        Auction auction = new Auction(1e15, address(lpToken), receiver, 1 hours, 1.5e18, 1e6);
 
         uint256 lastEpochId = auction.epochId();
 
