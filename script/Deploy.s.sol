@@ -2,45 +2,68 @@
 pragma solidity ^0.8.13;
 
 import {Script, console} from "forge-std/Script.sol";
-import {MockUSDC} from "../test/mocks/MockUSDC.sol";
-import {TokenFactory} from "../src/TokenFactory.sol";
-import {ContentFactory} from "../src/ContentFactory.sol";
-import {RewarderFactory} from "../src/RewarderFactory.sol";
+import {UnitFactory} from "../src/UnitFactory.sol";
+import {RigFactory} from "../src/RigFactory.sol";
+import {AuctionFactory} from "../src/AuctionFactory.sol";
 import {Core} from "../src/Core.sol";
-import {Router} from "../src/Router.sol";
 import {Multicall} from "../src/Multicall.sol";
+import {MockWETH} from "../src/mocks/MockWETH.sol";
+import {MockUniswapV2Factory, MockUniswapV2Router} from "../src/mocks/MockUniswapV2.sol";
+import {MockToken} from "../test/mocks/MockToken.sol";
 
 contract Deploy is Script {
-    MockUSDC public usdc;
-    TokenFactory public tokenFactory;
-    ContentFactory public contentFactory;
-    RewarderFactory public rewarderFactory;
+    MockWETH public weth;
+    MockToken public donut;
+    MockUniswapV2Factory public uniswapFactory;
+    MockUniswapV2Router public uniswapRouter;
+    UnitFactory public unitFactory;
+    RigFactory public rigFactory;
+    AuctionFactory public auctionFactory;
     Core public core;
-    Router public router;
     Multicall public multicall;
 
     function run() public {
         vm.startBroadcast();
 
-        usdc = new MockUSDC();
-        console.log("MockUSDC deployed at:", address(usdc));
+        // Deploy mocks
+        weth = new MockWETH();
+        console.log("MockWETH deployed at:", address(weth));
 
-        tokenFactory = new TokenFactory();
-        console.log("TokenFactory deployed at:", address(tokenFactory));
+        donut = new MockToken("Donut Token", "DONUT");
+        console.log("Donut deployed at:", address(donut));
 
-        contentFactory = new ContentFactory();
-        console.log("ContentFactory deployed at:", address(contentFactory));
+        uniswapFactory = new MockUniswapV2Factory();
+        console.log("UniswapV2Factory deployed at:", address(uniswapFactory));
 
-        rewarderFactory = new RewarderFactory();
-        console.log("RewarderFactory deployed at:", address(rewarderFactory));
+        uniswapRouter = new MockUniswapV2Router(address(uniswapFactory));
+        console.log("UniswapV2Router deployed at:", address(uniswapRouter));
 
-        core = new Core(address(usdc), address(tokenFactory), address(contentFactory), address(rewarderFactory));
+        // Deploy factories
+        unitFactory = new UnitFactory();
+        console.log("UnitFactory deployed at:", address(unitFactory));
+
+        rigFactory = new RigFactory();
+        console.log("RigFactory deployed at:", address(rigFactory));
+
+        auctionFactory = new AuctionFactory();
+        console.log("AuctionFactory deployed at:", address(auctionFactory));
+
+        // Deploy Core
+        core = new Core(
+            address(weth),
+            address(donut),
+            address(uniswapFactory),
+            address(uniswapRouter),
+            address(unitFactory),
+            address(rigFactory),
+            address(auctionFactory),
+            msg.sender, // protocolFeeAddress
+            100 ether // minDonutForLaunch
+        );
         console.log("Core deployed at:", address(core));
 
-        router = new Router(address(core));
-        console.log("Router deployed at:", address(router));
-
-        multicall = new Multicall(address(core));
+        // Deploy Multicall
+        multicall = new Multicall(address(core), address(weth), address(donut));
         console.log("Multicall deployed at:", address(multicall));
 
         vm.stopBroadcast();

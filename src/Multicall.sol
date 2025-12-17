@@ -1,232 +1,242 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.19;
 
-import {IERC20, IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
-import {FixedPointMathLib} from "solmate/utils/FixedPointMathLib.sol";
-import {IToken} from "./interfaces/IToken.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {IRig} from "./interfaces/IRig.sol";
+import {IAuction} from "./interfaces/IAuction.sol";
 import {ICore} from "./interfaces/ICore.sol";
-import {IRewarder} from "./interfaces/IRewarder.sol";
-import {IContent} from "./interfaces/IContent.sol";
 
+interface IWETH {
+    function deposit() external payable;
+    function withdraw(uint256) external;
+}
+
+/**
+ * @title Multicall
+ * @author heesho
+ * @notice Helper contract for batched operations and aggregated view functions.
+ * @dev Provides ETH wrapping for mining and comprehensive state queries for Rigs and Auctions.
+ */
 contract Multicall {
-    using FixedPointMathLib for uint256;
+    using SafeERC20 for IERC20;
 
-    address public immutable core;
+    error Multicall__ZeroAddress();
 
-    struct TokenData {
-        uint256 index;
-        address token;
-        address quote;
-        address content;
-        address rewarder;
-        address owner;
-        string name;
-        string symbol;
-        string uri;
-        bool isModerated;
-        uint256 marketCap;
-        uint256 liquidity;
-        uint256 floorPrice;
-        uint256 marketPrice;
-        uint256 circulatingSupply;
-        uint256 maxSupply;
-        uint256 contentApr;
-        uint256 accountQuoteBalance;
-        uint256 accountTokenBalance;
-        uint256 accountDebt;
-        uint256 accountCredit;
-        uint256 accountTransferrable;
-        uint256 accountContentOwned;
-        uint256 accountContentStaked;
-        uint256 accountQuoteEarned;
-        uint256 accountTokenEarned;
-        bool accountIsModerator;
+    /*----------  IMMUTABLES  -------------------------------------------*/
+
+    address public immutable core; // Core contract reference
+    address public immutable weth; // wrapped ETH address
+    address public immutable donut; // DONUT token address
+
+    /*----------  STRUCTS  ----------------------------------------------*/
+
+    /**
+     * @notice Aggregated state for a Rig contract.
+     */
+    struct RigState {
+        uint256 epochId; // current epoch
+        uint256 initPrice; // epoch starting price
+        uint256 epochStartTime; // epoch start timestamp
+        uint256 glazed; // tokens earned so far this epoch
+        uint256 price; // current Dutch auction price
+        uint256 ups; // stored units per second
+        uint256 nextUps; // calculated current ups
+        uint256 unitPrice; // Unit token price in DONUT
+        address miner; // current miner
+        string epochUri; // metadata URI set by miner
+        string rigUri; // metadata URI for the unit token (set by owner)
+        uint256 ethBalance; // user's ETH balance
+        uint256 wethBalance; // user's WETH balance
+        uint256 donutBalance; // user's DONUT balance
+        uint256 unitBalance; // user's Unit balance
     }
 
-    struct ContentData {
-        uint256 tokenId;
-        uint256 price;
-        uint256 nextPrice;
-        uint256 rewardForDuration;
-        address creator;
-        address owner;
-        string uri;
-        bool isApproved;
+    /**
+     * @notice Aggregated state for an Auction contract.
+     */
+    struct AuctionState {
+        uint256 epochId; // current epoch
+        uint256 initPrice; // epoch starting price
+        uint256 startTime; // epoch start timestamp
+        address paymentToken; // LP token used for payment (Unit-DONUT LP)
+        uint256 price; // current Dutch auction price (in LP tokens)
+        uint256 paymentTokenPrice; // LP token price in DONUT
+        uint256 wethAccumulated; // WETH held by auction (from treasury fees)
+        uint256 wethBalance; // user's WETH balance
+        uint256 donutBalance; // user's DONUT balance
+        uint256 paymentTokenBalance; // user's LP balance
     }
 
-    constructor(address _core) {
+    /*----------  CONSTRUCTOR  ------------------------------------------*/
+
+    /**
+     * @notice Deploy the Multicall helper contract.
+     * @param _core Core contract address
+     * @param _weth Wrapped ETH address
+     * @param _donut DONUT token address
+     */
+    constructor(address _core, address _weth, address _donut) {
+        if (_core == address(0) || _weth == address(0) || _donut == address(0)) revert Multicall__ZeroAddress();
         core = _core;
+        weth = _weth;
+        donut = _donut;
     }
 
-    function getTokenData(address token, address account) external view returns (TokenData memory data) {
-        address quote = IToken(token).quote();
-        address content = IToken(token).content();
-        address rewarder = IToken(token).rewarder();
-        uint256 precision = IToken(token).PRECISION();
+    /*----------  EXTERNAL FUNCTIONS  -----------------------------------*/
 
-        uint256 index = ICore(core).token_Index(token);
-        string memory uri = IContent(content).uri();
+    /**
+     * @notice Mine a rig using ETH (wraps to WETH automatically).
+     * @dev Wraps sent ETH to WETH, approves the rig, and calls mine(). Refunds excess WETH.
+     * @param rig Rig contract address
+     * @param epochId Expected epoch ID
+     * @param deadline Transaction deadline
+     * @param maxPrice Maximum price willing to pay
+     * @param epochUri Metadata URI for this mining action
+     */
+    function mine(address rig, uint256 epochId, uint256 deadline, uint256 maxPrice, string memory epochUri)
+        external
+        payable
+    {
+        IWETH(weth).deposit{value: msg.value}();
+        IERC20(weth).safeApprove(rig, 0);
+        IERC20(weth).safeApprove(rig, msg.value);
+        IRig(rig).mine(msg.sender, epochId, deadline, maxPrice, epochUri);
 
-        data.index = index;
+        // Refund unused WETH
+        uint256 wethBalance = IERC20(weth).balanceOf(address(this));
+        if (wethBalance > 0) {
+            IERC20(weth).safeTransfer(msg.sender, wethBalance);
+        }
+    }
 
-        data.token = token;
-        data.quote = quote;
-        data.content = content;
-        data.rewarder = rewarder;
-        data.owner = IContent(content).owner();
+    /**
+     * @notice Buy from an auction using LP tokens.
+     * @dev Transfers LP tokens from caller, approves auction, and executes buy.
+     * @param rig Rig contract address (used to look up auction)
+     * @param epochId Expected epoch ID
+     * @param deadline Transaction deadline
+     * @param maxPaymentTokenAmount Maximum LP tokens willing to pay
+     */
+    function buy(address rig, uint256 epochId, uint256 deadline, uint256 maxPaymentTokenAmount) external {
+        address auction = ICore(core).rigToAuction(rig);
+        address paymentToken = IAuction(auction).paymentToken();
+        uint256 price = IAuction(auction).getPrice();
+        address[] memory assets = new address[](1);
+        assets[0] = weth;
 
-        data.name = IERC20Metadata(token).name();
-        data.symbol = IERC20Metadata(token).symbol();
-        data.uri = uri;
-        data.isModerated = IContent(content).isModerated();
+        IERC20(paymentToken).safeTransferFrom(msg.sender, address(this), price);
+        IERC20(paymentToken).safeApprove(auction, 0);
+        IERC20(paymentToken).safeApprove(auction, price);
+        IAuction(auction).buy(assets, msg.sender, epochId, deadline, maxPaymentTokenAmount);
+    }
 
-        data.marketCap =
-            IToken(token).wadToRaw(IToken(token).maxSupply().mulDivDown(IToken(token).getMarketPrice(), precision));
-        data.liquidity =
-            IToken(token).wadToRaw(IToken(token).reserveRealQuoteWad() + IToken(token).reserveVirtQuoteWad()) * 2;
-        data.floorPrice = IToken(token).getFloorPrice();
-        data.marketPrice = IToken(token).getMarketPrice();
-        data.circulatingSupply = IERC20(token).totalSupply();
-        data.maxSupply = IToken(token).maxSupply();
+    /**
+     * @notice Launch a new rig via Core.
+     * @dev Transfers DONUT from caller, approves Core, and calls launch with caller as launcher.
+     * @param params Launch parameters (launcher field is overwritten with msg.sender)
+     * @return unit Address of deployed Unit token
+     * @return rig Address of deployed Rig contract
+     * @return auction Address of deployed Auction contract
+     * @return lpToken Address of Unit/DONUT LP token
+     */
+    function launch(ICore.LaunchParams calldata params)
+        external
+        returns (address unit, address rig, address auction, address lpToken)
+    {
+        // Transfer DONUT from user
+        IERC20(donut).safeTransferFrom(msg.sender, address(this), params.donutAmount);
+        IERC20(donut).safeApprove(core, 0);
+        IERC20(donut).safeApprove(core, params.donutAmount);
 
-        uint256 totalContentStaked = IToken(token).rawToWad(IRewarder(rewarder).totalSupply());
-        uint256 accountContentStaked = IToken(token).rawToWad(IRewarder(rewarder).account_Balance(account));
+        // Build params with msg.sender as launcher
+        ICore.LaunchParams memory launchParams = ICore.LaunchParams({
+            launcher: msg.sender,
+            tokenName: params.tokenName,
+            tokenSymbol: params.tokenSymbol,
+            uri: params.uri,
+            donutAmount: params.donutAmount,
+            unitAmount: params.unitAmount,
+            initialUps: params.initialUps,
+            tailUps: params.tailUps,
+            halvingPeriod: params.halvingPeriod,
+            rigEpochPeriod: params.rigEpochPeriod,
+            rigPriceMultiplier: params.rigPriceMultiplier,
+            rigMinInitPrice: params.rigMinInitPrice,
+            auctionInitPrice: params.auctionInitPrice,
+            auctionEpochPeriod: params.auctionEpochPeriod,
+            auctionPriceMultiplier: params.auctionPriceMultiplier,
+            auctionMinInitPrice: params.auctionMinInitPrice
+        });
 
-        uint256 contentQuoteRewardForDuration = IToken(token).rawToWad(IRewarder(rewarder).getRewardForDuration(quote));
-        uint256 contentTokenRewardForDuration = IRewarder(rewarder).getRewardForDuration(token);
-        uint256 contentApr = totalContentStaked == 0
-            ? 0
-            : (
-                (
-                    contentQuoteRewardForDuration
-                        + ((contentTokenRewardForDuration * IToken(token).getMarketPrice()) / precision)
-                ) * 365 * 100 * precision
-            ) / (7 * totalContentStaked);
+        return ICore(core).launch(launchParams);
+    }
 
-        data.contentApr = contentApr;
+    /*----------  VIEW FUNCTIONS  ---------------------------------------*/
 
-        if (account != address(0)) {
-            data.accountQuoteBalance = IERC20(quote).balanceOf(account);
-            data.accountTokenBalance = IERC20(token).balanceOf(account);
-            data.accountDebt = IToken(token).account_DebtRaw(account);
-            data.accountCredit = IToken(token).getAccountCredit(account);
-            data.accountTransferrable = IToken(token).getAccountTransferrable(account);
-            data.accountContentOwned = IContent(content).balanceOf(account);
-            data.accountContentStaked = accountContentStaked;
-            data.accountQuoteEarned = IRewarder(rewarder).earned(account, quote);
-            data.accountTokenEarned = IRewarder(rewarder).earned(account, token);
-            data.accountIsModerator =
-                IContent(content).owner() == account || IContent(content).account_IsModerator(account);
+    /**
+     * @notice Get aggregated state for a Rig and user balances.
+     * @param rig Rig contract address
+     * @param account User address (or address(0) to skip balance queries)
+     * @return state Aggregated rig state
+     */
+    function getRig(address rig, address account) external view returns (RigState memory state) {
+        state.epochId = IRig(rig).epochId();
+        state.initPrice = IRig(rig).epochInitPrice();
+        state.epochStartTime = IRig(rig).epochStartTime();
+        state.ups = IRig(rig).epochUps();
+        state.glazed = state.ups * (block.timestamp - state.epochStartTime);
+        state.price = IRig(rig).getPrice();
+        state.nextUps = IRig(rig).getUps();
+        state.miner = IRig(rig).epochMiner();
+        state.epochUri = IRig(rig).epochUri();
+        state.rigUri = IRig(rig).uri();
+
+        address unitToken = IRig(rig).unit();
+        address auction = ICore(core).rigToAuction(rig);
+
+        // Calculate Unit price in DONUT from LP reserves
+        if (auction != address(0)) {
+            address lpToken = IAuction(auction).paymentToken();
+            uint256 donutInLP = IERC20(donut).balanceOf(lpToken);
+            uint256 unitInLP = IERC20(unitToken).balanceOf(lpToken);
+            state.unitPrice = unitInLP == 0 ? 0 : donutInLP * 1e18 / unitInLP;
         }
 
-        return data;
+        // User balances
+        state.ethBalance = account == address(0) ? 0 : account.balance;
+        state.wethBalance = account == address(0) ? 0 : IERC20(weth).balanceOf(account);
+        state.donutBalance = account == address(0) ? 0 : IERC20(donut).balanceOf(account);
+        state.unitBalance = account == address(0) ? 0 : IERC20(unitToken).balanceOf(account);
+
+        return state;
     }
 
-    function getContentData(address token, uint256 tokenId) external view returns (ContentData memory data) {
-        address content = IToken(token).content();
-        address rewarder = IToken(token).rewarder();
-        address quote = IToken(token).quote();
-        uint256 precision = IToken(token).PRECISION();
+    /**
+     * @notice Get aggregated state for an Auction and user balances.
+     * @param rig Rig contract address (used to look up auction)
+     * @param account User address (or address(0) to skip balance queries)
+     * @return state Aggregated auction state
+     */
+    function getAuction(address rig, address account) external view returns (AuctionState memory state) {
+        address auction = ICore(core).rigToAuction(rig);
 
-        uint256 totalContentStaked = IRewarder(rewarder).totalSupply();
+        state.epochId = IAuction(auction).epochId();
+        state.initPrice = IAuction(auction).initPrice();
+        state.startTime = IAuction(auction).startTime();
+        state.paymentToken = IAuction(auction).paymentToken();
+        state.price = IAuction(auction).getPrice();
 
-        uint256 contentQuoteRewardForDuration = IToken(token).rawToWad(IRewarder(rewarder).getRewardForDuration(quote));
-        uint256 contentTokenRewardForDuration = IRewarder(rewarder).getRewardForDuration(token);
-        uint256 rewardForDuration = (
-            contentQuoteRewardForDuration
-                + ((contentTokenRewardForDuration * IToken(token).getMarketPrice()) / precision)
-        );
+        // LP price in DONUT = (DONUT in LP * 2) / LP total supply
+        uint256 lpTotalSupply = IERC20(state.paymentToken).totalSupply();
+        state.paymentTokenPrice =
+            lpTotalSupply == 0 ? 0 : IERC20(donut).balanceOf(state.paymentToken) * 2e18 / lpTotalSupply;
 
-        data.tokenId = tokenId;
-        data.price = IContent(content).id_Price(tokenId);
-        data.nextPrice = IContent(content).getNextPrice(tokenId);
-        data.rewardForDuration = IContent(content).id_Price(tokenId) == 0
-            ? 0
-            : rewardForDuration * IContent(content).id_Price(tokenId) / totalContentStaked;
-        data.creator = IContent(content).id_Creator(tokenId);
-        data.owner = IContent(content).owner();
-        data.uri = IContent(content).uri();
-        data.isApproved = IContent(content).id_IsApproved(tokenId);
+        state.wethAccumulated = IERC20(weth).balanceOf(auction);
+        state.wethBalance = account == address(0) ? 0 : IERC20(weth).balanceOf(account);
+        state.donutBalance = account == address(0) ? 0 : IERC20(donut).balanceOf(account);
+        state.paymentTokenBalance = account == address(0) ? 0 : IERC20(state.paymentToken).balanceOf(account);
 
-        return data;
-    }
-
-    function buyQuoteIn(address token, uint256 quoteRawIn, uint256 slippageTolerance)
-        external
-        view
-        returns (uint256 tokenAmtOut, uint256 slippage, uint256 minTokenAmtOut, uint256 autoMinTokenAmtOut)
-    {
-        if (quoteRawIn < IToken(token).MIN_TRADE_SIZE()) return (0, 0, 0, 0);
-
-        uint256 fee = IToken(token).FEE();
-        uint256 divisor = IToken(token).DIVISOR();
-        uint256 precision = IToken(token).PRECISION();
-
-        uint256 xr = IToken(token).reserveRealQuoteWad();
-        uint256 xv = IToken(token).reserveVirtQuoteWad();
-
-        uint256 quoteWadIn = IToken(token).rawToWad(quoteRawIn);
-        uint256 feeRaw = (quoteRawIn * fee) / divisor;
-        uint256 netRaw = quoteRawIn - feeRaw;
-        uint256 netWad = IToken(token).rawToWad(netRaw);
-
-        uint256 x0 = xv + xr;
-        uint256 x1 = x0 + netWad;
-        uint256 y0 = IToken(token).reserveTokenAmt();
-        uint256 y1 = x0.mulWadUp(y0).divWadUp(x1);
-
-        if (y1 >= y0) return (0, 0, 0, 0);
-
-        tokenAmtOut = y0 - y1;
-        slippage = 100 * (precision - (tokenAmtOut.mulDivDown(IToken(token).getMarketPrice(), quoteWadIn)));
-        minTokenAmtOut =
-            quoteWadIn.mulDivDown(precision, IToken(token).getMarketPrice()).mulDivDown(slippageTolerance, divisor);
-        autoMinTokenAmtOut = quoteWadIn.mulDivDown(precision, IToken(token).getMarketPrice()).mulDivDown(
-            (divisor * precision) - ((slippage + precision / 10) * 100), divisor * precision
-        );
-    }
-
-    function sellTokenIn(address token, uint256 tokenAmtIn, uint256 slippageTolerance)
-        external
-        view
-        returns (uint256 quoteRawOut, uint256 slippage, uint256 minQuoteRawOut, uint256 autoMinQuoteRawOut)
-    {
-        if (tokenAmtIn < IToken(token).MIN_TRADE_SIZE()) return (0, 0, 0, 0);
-        if (tokenAmtIn > IToken(token).maxSupply()) return (0, 0, 0, 0);
-
-        uint256 fee = IToken(token).FEE();
-        uint256 divisor = IToken(token).DIVISOR();
-        uint256 precision = IToken(token).PRECISION();
-
-        uint256 xr = IToken(token).reserveRealQuoteWad();
-        uint256 xv = IToken(token).reserveVirtQuoteWad();
-
-        uint256 feeAmt = (tokenAmtIn * fee) / divisor;
-        uint256 netAmt = tokenAmtIn - feeAmt;
-
-        uint256 y0 = IToken(token).reserveTokenAmt();
-        uint256 y1 = y0 + netAmt;
-        uint256 x0 = xv + xr;
-        uint256 x1 = x0.mulWadUp(y0).divWadUp(y1);
-
-        if (x1 >= x0) return (0, 0, 0, 0);
-
-        uint256 quoteWadOut = x0 - x1;
-        quoteRawOut = IToken(token).wadToRaw(quoteWadOut);
-
-        if (quoteRawOut == 0) return (0, 0, 0, 0);
-
-        slippage = 100
-            * (
-                precision
-                    - (quoteWadOut.mulDivDown(precision, tokenAmtIn.mulDivDown(IToken(token).getMarketPrice(), precision)))
-            );
-        uint256 minQuoteWadOut =
-            tokenAmtIn.mulDivDown(IToken(token).getMarketPrice(), precision).mulDivDown(slippageTolerance, divisor);
-        minQuoteRawOut = IToken(token).wadToRaw(minQuoteWadOut);
-        uint256 autoMinQuoteWadOut = tokenAmtIn.mulDivDown(IToken(token).getMarketPrice(), precision).mulDivDown(
-            (divisor * precision) - ((slippage + precision / 10) * 100), divisor * precision
-        );
-        autoMinQuoteRawOut = IToken(token).wadToRaw(autoMinQuoteWadOut);
+        return state;
     }
 }
